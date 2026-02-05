@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+python-dotenv
+langchain
+langchain-community
+langchain-core
+langchain-chroma
+langchain-text-splitters
+langgraph
+langgraph-checkpoint-sqlite
+dashscope
+pypdf
+docx2txt
+python-multipart
+aiosqlite
+rapidocr_onnxruntime

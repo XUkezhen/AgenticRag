@@ -1,0 +1,10 @@
+.env
+data/chroma/
+data/uploads/
+data/memory.sqlite
+
+__pycache__/
+*.pyc
+.venv/
+.vscode/
+.idea/
