@@ -157,8 +157,12 @@ async def chat_stream(req: ChatReq):
         # 使用 app.state.graph (已绑定 DB)
         async for event in app.state.graph.astream_events(inputs, config=config, version="v1"):
             kind = event["event"]
-            if kind == "on_chain_start" and event["name"] == "retrieve":
+            if kind == "on_chain_start" and event["name"] == "plan":
+                yield sse_pack("status", "正在规划问题...")
+            elif kind == "on_chain_start" and event["name"] == "retrieve":
                 yield sse_pack("status", "正在检索知识库...")
+            elif kind == "on_chain_start" and event["name"] == "critique":
+                yield sse_pack("status", "正在自检与补强...")
             elif kind == "on_chain_start" and event["name"] == "generate":
                 status = "正在联网搜索..." if req.use_web else "正在思考..."
                 yield sse_pack("status", status)

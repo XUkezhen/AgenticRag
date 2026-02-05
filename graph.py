@@ -24,6 +24,33 @@ def count_tokens_simple(messages: List[BaseMessage]) -> int:
 class State(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
     context: str
+    # Multi-role pipeline state (kept out of chat history)
+    plan: str
+    critique: str
+
+
+# 2. Plan node (question decomposition / answer outline)
+async def plan_node(state: State, config: RunnableConfig):
+    llm = get_llm(streaming=False, enable_search=False)
+
+    last_msg = state["messages"][-1]
+    query = last_msg.content
+
+    planner_prompt = [
+        SystemMessage(
+            content=(
+                "你是 PlannerAgent（规划智能体）。请为回答用户问题生成一个简短可执行的计划。\n"
+                "输出（纯文本即可）：\n"
+                "1) 回答大纲\n"
+                "2) 检索提示（关键词/实体/可能的限定条件）\n"
+                "3) 若需要澄清，请给出 1-3 个追问问题"
+            )
+        ),
+        HumanMessage(content=query),
+    ]
+
+    resp = await llm.ainvoke(planner_prompt)
+    return {"plan": resp.content}
 
 
 # 2. 检索节点 (长期记忆提取)
@@ -54,11 +81,39 @@ def retrieve_node(state: State, config: RunnableConfig):
     return {"context": context_text}
 
 
-# 3. 生成节点 (核心上下文工程发生地)
+# 3. Critique node (self-check / missing evidence)
+async def critique_node(state: State, config: RunnableConfig):
+    llm = get_llm(streaming=False, enable_search=False)
+
+    last_msg = state["messages"][-1]
+    query = last_msg.content
+    plan = state.get("plan", "")
+    context = state.get("context", "")
+
+    critic_prompt = [
+        SystemMessage(
+            content=(
+                "你是 CriticAgent（审校智能体）。请检查：计划 + 检索到的资料是否足以支撑回答。\n"
+                "请输出：\n"
+                "- 缺口/缺失证据（要点列表）\n"
+                "- 可能的幻觉风险/易错点\n"
+                "- 是否需要向用户追问澄清（如需要，给出 1-3 个问题）"
+            )
+        ),
+        HumanMessage(content=f"用户问题：\n{query}\n\n计划：\n{plan}\n\n检索到的资料：\n{context}"),
+    ]
+
+    resp = await llm.ainvoke(critic_prompt)
+    return {"critique": resp.content}
+
+
+# 4. 生成节点 (核心上下文工程发生地)
 async def generate_node(state: State, config: RunnableConfig):
     # 获取配置
     use_web = config["configurable"].get("use_web", False)
     context = state.get("context", "")
+    plan = state.get("plan", "")
+    critique = state.get("critique", "")
 
     # 获取 LLM
     llm = get_llm(streaming=True, enable_search=use_web)
@@ -92,6 +147,12 @@ async def generate_node(state: State, config: RunnableConfig):
     if context:
         system_prompt_text += f"\n\n### 📎 参考资料 (RAG检索结果) ###\n{context}\n################################"
 
+    if plan:
+        system_prompt_text += f"\n\n### PlannerAgent Plan ###\n{plan}\n########################"
+
+    if critique:
+        system_prompt_text += f"\n\n### CriticAgent Notes ###\n{critique}\n########################"
+
     # 最终组合：系统提示 + 裁剪后的历史
     final_messages = [SystemMessage(content=system_prompt_text)] + trimmed_history
 
@@ -102,13 +163,17 @@ async def generate_node(state: State, config: RunnableConfig):
     return {"messages": [response]}
 
 
-# 4. 构建图
+# 5. 构建图
 workflow = StateGraph(State)
+workflow.add_node("plan", plan_node)
 workflow.add_node("retrieve", retrieve_node)
+workflow.add_node("critique", critique_node)
 workflow.add_node("generate", generate_node)
 
-workflow.add_edge(START, "retrieve")
-workflow.add_edge("retrieve", "generate")
+workflow.add_edge(START, "plan")
+workflow.add_edge("plan", "retrieve")
+workflow.add_edge("retrieve", "critique")
+workflow.add_edge("critique", "generate")
 workflow.add_edge("generate", END)
 
 # 导出 builder
